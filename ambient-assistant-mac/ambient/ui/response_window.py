@@ -185,6 +185,9 @@ class ResponseWindow(QMainWindow):
         self.drag_pos = None
         self.assistant_mode = AssistantMode.NORMAL
         
+        # Flag to track quitting state
+        self._quitting = False
+        
         # Track active response stream
         self.current_response_id = None
         self.last_question_position = None
@@ -194,6 +197,9 @@ class ResponseWindow(QMainWindow):
         
         # Install event filter to prevent window hiding
         self.installEventFilter(self)
+        
+        # Force always on top
+        self._force_always_on_top()
         
         # Initialize workers
         self.screenshot_worker = None
@@ -215,12 +221,15 @@ class ResponseWindow(QMainWindow):
         """Initialize the modern UI components."""
         # Set window properties
         self.setWindowTitle("Ambient Teacher Assistant")
-        self.setWindowFlags(Qt.WindowType.Dialog | Qt.WindowType.FramelessWindowHint)
+        self.setWindowFlags(Qt.WindowType.WindowStaysOnTopHint | Qt.WindowType.FramelessWindowHint | Qt.WindowType.Tool)
         self.setAttribute(Qt.WidgetAttribute.WA_TranslucentBackground)
         self.setAttribute(Qt.WidgetAttribute.WA_MacAlwaysShowToolWindow, True)  # macOS specific to prevent hiding
+        self.setAttribute(Qt.WidgetAttribute.WA_AlwaysStackOnTop, True)  # Always stay on top
         
-        # Also set the window to be active
-        QTimer.singleShot(100, self.activateWindow)
+        # Set up a timer to ensure window stays visible
+        self.visibility_timer = QTimer(self)
+        self.visibility_timer.timeout.connect(self._ensure_visibility)
+        self.visibility_timer.start(1000)  # Check every second
         
         # Main container
         container = QWidget()
@@ -302,13 +311,29 @@ class ResponseWindow(QMainWindow):
         self.resize(800, 600)
         self._center_window()
         
+    def _force_always_on_top(self):
+        """Force the window to be always on top of all other windows."""
+        # Extra measure to ensure window stays on top
+        self.setWindowFlags(self.windowFlags() | Qt.WindowType.WindowStaysOnTopHint)
+        self.show()
+        self.raise_()
+        self.activateWindow()
+        
+        # On macOS, additional measure to keep the window visible
+        if hasattr(Qt, 'AA_MacPluginApplication'):
+            self.setAttribute(Qt.ApplicationAttribute.AA_MacPluginApplication)
+        
     def _center_window(self):
-        """Center window on screen."""
+        """Center window on screen and ensure it's on top."""
         screen = self.screen().geometry()
         window_size = self.geometry()
         x = (screen.width() - window_size.width()) // 2
         y = (screen.height() - window_size.height()) // 2
         self.move(x, y)
+        
+        # Ensure window is on top after moving
+        self.raise_()
+        self.activateWindow()
         
     def mousePressEvent(self, event):
         """Handle mouse press for dragging."""
@@ -549,12 +574,58 @@ Then try again.""")
     
     def _quit_application(self):
         """Properly quit the application."""
+        self._quitting = True  # Mark as quitting to allow hiding
         self.event_bus.publish(Events.SHUTDOWN)
 
+    def _ensure_visibility(self):
+        """Ensure the window stays visible and on top."""
+        if not self.isVisible():
+            self.show()
+        if not self.isActiveWindow():
+            self.raise_()  # Brings window to front
+        
     def eventFilter(self, obj, event):
         """Handle events to prevent window from hiding when focus changes."""
         if event.type() == QEvent.Type.WindowDeactivate:
             # When window loses focus, ensure it stays visible
             QTimer.singleShot(100, self.show)
-            QTimer.singleShot(200, self.activateWindow)
-        return super().eventFilter(obj, event) 
+            QTimer.singleShot(200, self.raise_)
+            QTimer.singleShot(300, self.activateWindow)
+        elif event.type() == QEvent.Type.WindowStateChange:
+            # If window state changes (minimized, etc.), restore it
+            if self.windowState() & Qt.WindowState.WindowMinimized:
+                QTimer.singleShot(100, lambda: self.setWindowState(Qt.WindowState.WindowActive))
+            
+        return super().eventFilter(obj, event)
+
+    def hideEvent(self, event):
+        """Override hide event to prevent window from being hidden."""
+        # Only allow hiding if it's from the quit button
+        if hasattr(self, '_quitting') and self._quitting:
+            super().hideEvent(event)
+        else:
+            # Don't hide, just bring to front
+            QTimer.singleShot(100, self.show)
+            QTimer.singleShot(200, self.raise_)
+            event.ignore()
+
+    def showEvent(self, event):
+        """Handle show events to ensure the window is active and on top."""
+        super().showEvent(event)
+        # Bring window to front when shown
+        self.raise_()
+        self.activateWindow()
+        
+    def changeEvent(self, event):
+        """Handle window state changes to ensure visibility."""
+        if event.type() == QEvent.Type.WindowStateChange:
+            # If minimized, restore immediately
+            if self.windowState() & Qt.WindowState.WindowMinimized:
+                self.setWindowState(Qt.WindowState.WindowActive)
+        super().changeEvent(event)
+        
+    def focusInEvent(self, event):
+        """Handle focus-in events."""
+        super().focusInEvent(event)
+        # When focus gained, ensure we're at the top
+        self.raise_() 

@@ -26,15 +26,16 @@ class ModelManager:
             return
             
         try:
-            # Initialize with streaming support
+            # Initialize with streaming support and GPT-4o
+            model_name = "gpt-4o"
             self.chat_model = ChatOpenAI(
                 api_key=self.api_key,
                 temperature=0.7,
-                model_name="gpt-4o",
+                model_name=model_name,
                 request_timeout=30,
                 streaming=True  # Enable streaming
             )
-            self.logger.info("LLM initialized with OpenAI (streaming enabled)")
+            self.logger.info(f"LLM initialized with OpenAI {model_name} (streaming enabled)")
             self.demo_mode = False
         except Exception as e:
             self.logger.error(f"Failed to initialize LLM: {e}")
